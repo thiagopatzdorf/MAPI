@@ -1,0 +1,65 @@
+{
+  "_comment": "ALVO do teste: a entrada em tools/list que `mapi build --mcp` deve emitir de gcp_inventario.mapi.yaml (MCP 2026-07-28; a era legada usa o mesmo objeto Tool).",
+  "name": "gcp_inventario",
+  "title": "Inventário do projeto GCP",
+  "description": "Tudo o que roda no projeto numa chamada: VMs, Cloud Run, Cloud SQL, buckets, Scheduler e filas. Chame antes de qualquer gcp_* de escrita. Seção que falha vem com `erro` na própria seção; as outras continuam. Not for: Logs (gcp.logs) e custo (gcp.custo) têm capacidade própria.",
+  "inputSchema": {
+    "type": "object",
+    "additionalProperties": false
+  },
+  "outputSchema": {
+    "type": "object",
+    "required": ["ok", "dry_run", "result", "budget"],
+    "properties": {
+      "ok": { "type": "boolean" },
+      "dry_run": { "type": "boolean", "const": false },
+      "result": {
+        "type": "object",
+        "required": ["projeto", "regiao", "vms", "cloud_run", "cloud_sql", "buckets", "agendador", "filas"],
+        "properties": {
+          "projeto": { "type": "string" },
+          "regiao": { "type": "string" },
+          "vms": { "$ref": "#/$defs/secao" },
+          "cloud_run": { "$ref": "#/$defs/secao" },
+          "cloud_sql": { "$ref": "#/$defs/secao" },
+          "buckets": { "$ref": "#/$defs/secao" },
+          "agendador": { "$ref": "#/$defs/secao" },
+          "filas": { "$ref": "#/$defs/secao" }
+        }
+      },
+      "budget": {
+        "type": "object",
+        "properties": {
+          "cost": { "type": "object", "properties": { "amount": { "type": "number" }, "unit": { "type": "string" } } },
+          "output_bytes": { "type": "integer" },
+          "truncated": { "type": "boolean" }
+        }
+      }
+    },
+    "$defs": {
+      "secao": {
+        "type": "object",
+        "required": ["ok"],
+        "properties": {
+          "ok": { "type": "boolean" },
+          "conta": { "type": "string", "enum": ["reader", "admin"] },
+          "erro": { "type": "string" }
+        }
+      }
+    }
+  },
+  "annotations": {
+    "title": "Inventário do projeto GCP",
+    "readOnlyHint": true,
+    "destructiveHint": false,
+    "idempotentHint": true,
+    "openWorldHint": false
+  },
+  "_meta": {
+    "io.mapi/version": "0.1",
+    "io.mapi/capability": "gcp.inventario@1",
+    "io.mapi/effect": "read",
+    "io.mapi/budget": { "cost": { "amount": 0, "unit": "USD" }, "max_output_bytes": 262144, "max_duration_s": 30 },
+    "_comment": "_meta só é emitido se Tool._meta for confirmado na spec (research.md §6); a verdade está em annotations+description."
+  }
+}

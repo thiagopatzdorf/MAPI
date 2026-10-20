@@ -1,0 +1,197 @@
+# Exemplo 3 — destrutiva com inversa e pré-condição, derivada de receitas.apagar
+# (código privado), recorte tipo=disco: "apaga disco (prova: snapshot) só depois de
+# conferir a prova, e só diz que apagou quando o GET do recurso devolve 404".
+#
+# O que a receita faz hoje, e onde cada parte cai no MAPI:
+#   - exige `prova` (snapshot) existente, READY, DESTE disco, < 24 h ........ precondition.evidence
+#   - recusa disco da ops-host/control-plane e disco em uso ............... consent.refuses
+#   - registra prova_conferida ANTES do DELETE ............................... (auditoria da casca; não é campo)
+#   - seco por padrão ....................................................... consent.dry_run
+#   - DELETE e espera GET 404 (9 tentativas × 5 s) ........................... proof
+#   - volta = "recriar a partir de <snapshot>" (texto) ....................... reversible.inverse (tipado)
+mapi: "0.1"
+capability: gcp.disk.delete
+version: 1
+title: Apagar disco do Compute com prova de volta
+when_to_use: >-
+  Apaga um disco persistente SÓ quando existe um snapshot READY dele com menos de
+  24 h. Seco por padrão. Confirmado, só diz ok quando o GET do disco devolve 404.
+  A volta é recriar o disco a partir do snapshot.
+when_not_to_use: >-
+  Disco em uso por VM (desanexe antes) e discos da ops-host / control-plane
+  (decisão do dono, não de receita).
+
+effect: destroy
+idempotent: true         # apagar o que já sumiu é 404 → tratado como "nada a fazer"
+open_world: false
+
+input:
+  type: object
+  additionalProperties: false
+  required: [zone, disk, snapshot]
+  properties:
+    zone: { type: string, pattern: "^[a-z]+-[a-z]+[0-9]-[a-z]$", examples: [southamerica-east1-a] }
+    disk: { type: string, pattern: "^[a-z][a-z0-9-]{0,62}$" }
+    snapshot: { type: string, pattern: "^[a-z][a-z0-9-]{0,62}$", description: "nome do snapshot que serve de prova de reconstrução" }
+
+output:
+  type: object
+  required: [deleted]
+  properties:
+    deleted: { type: boolean }
+    operation: { type: string }
+
+consent:
+  dry_run: default
+  confirm: { parameter: confirm }
+  refuses:
+    - id: disco_intocavel
+      when: "$.input.disk startsWith 'ops-host' || $.input.disk startsWith 'control-plane'"
+      reason: "disco da ops-host ou do control-plane da loja: não se apaga por receita"
+    - id: disco_em_uso
+      when: "$.evidence.disk.users != null && length($.evidence.disk.users) > 0"
+      reason: "disco em uso por uma VM; desanexe antes"
+
+precondition:
+  evidence:
+    - id: disk
+      read: { capability: gcp.disk.get, args: { zone: "$.input.zone", disk: "$.input.disk" } }
+      expect:
+        - { context: "$.response", condition: "$.status == 200", type: simple }
+    - id: snapshot
+      read: { capability: gcp.snapshot.get, args: { snapshot: "$.input.snapshot" } }
+      expect:
+        - { context: "$.response.body", condition: "$.status == 'READY'", type: simple }
+        - { context: "$.response.body", condition: "$.sourceDisk endsWith '/zones/' + $.input.zone + '/disks/' + $.input.disk", type: simple }
+      max_age_s: 86400
+      age_field: "$.response.body.creationTimestamp"
+
+reversible:
+  inverse:
+    capability: gcp.disk.create_from_snapshot
+    args: { zone: "$.input.zone", disk: "$.input.disk", snapshot: "$.input.snapshot", confirm: true }
+
+proof:
+  read: { capability: gcp.disk.get, args: { zone: "$.input.zone", disk: "$.input.disk" } }
+  expect:
+    - { context: "$.response", condition: "$.status == 404", type: simple }
+  within_s: 45
+  interval_s: 5
+
+budget:
+  cost: { amount: 0, unit: USD }       # o DELETE em si não custa; o snapshot que serve de prova custa por GB-mês (fora deste contrato)
+  max_output_bytes: 4096
+  max_duration_s: 90
+
+bindings:
+  http:
+    method: DELETE
+    url: "https://factory.internal/api/v1/gcp/disks/{zone}/{disk}?snapshot={snapshot}&confirm={confirm}"
+    auth: bearer
+  mcp:
+    tool: gcp_disk_delete
+  python:
+    callable: "factory_cauteloso.receitas:apagar"
+    fixed_args: { tipo: disco }
+    arg_map: { nome: "{zone}/{disk}", prova: "{snapshot}" }
+
+audit:
+  record_before_execute: true      # a receita grava fase=prova_conferida antes do DELETE; o compilador mantém isso na casca
+
+examples:
+  - name: seco_com_snapshot_valido_mostra_delete_e_a_volta
+    input: { zone: southamerica-east1-a, disk: dados-velhos, snapshot: dados-velhos-20261020 }
+    fake_server:
+      - { method: GET, path: "/zones/southamerica-east1-a/disks/dados-velhos", status: 200, body: { name: dados-velhos, users: [] } }
+      - { method: GET, path: "/global/snapshots/dados-velhos-20261020", status: 200, body: { status: READY, sourceDisk: ".../zones/southamerica-east1-a/disks/dados-velhos", creationTimestamp: "<agora - 1h>" } }
+    dry_run_expected:
+      would_do: "DELETE https://compute.googleapis.com/compute/v1/projects/<p>/zones/southamerica-east1-a/disks/dados-velhos"
+      precondition: { disk: ok, snapshot: ok }
+      inverse: { capability: gcp.disk.create_from_snapshot, args: { zone: southamerica-east1-a, disk: dados-velhos, snapshot: dados-velhos-20261020, confirm: true } }
+  - name: snapshot_de_outro_disco_e_recusado_antes_do_seco
+    input: { zone: southamerica-east1-a, disk: dados-velhos, snapshot: outro-20261020 }
+    fake_server:
+      - { method: GET, path: "/zones/southamerica-east1-a/disks/dados-velhos", status: 200, body: { users: [] } }
+      - { method: GET, path: "/global/snapshots/outro-20261020", status: 200, body: { status: READY, sourceDisk: ".../disks/outro", creationTimestamp: "<agora - 1h>" } }
+    refused_expected: precondition.snapshot
+  - name: snapshot_com_25h_e_recusado
+    input: { zone: southamerica-east1-a, disk: dados-velhos, snapshot: dados-velhos-20261019 }
+    fake_server:
+      - { method: GET, path: "/zones/southamerica-east1-a/disks/dados-velhos", status: 200, body: { users: [] } }
+      - { method: GET, path: "/global/snapshots/dados-velhos-20261019", status: 200, body: { status: READY, sourceDisk: ".../zones/southamerica-east1-a/disks/dados-velhos", creationTimestamp: "<agora - 25h>" } }
+    refused_expected: precondition.snapshot
+  - name: disco_do_control_plane_e_recusado_mesmo_com_snapshot
+    input: { zone: southamerica-east1-a, disk: control-plane-southamerica-east1-a-dados, snapshot: x }
+    refused_expected: disco_intocavel
+  - name: delete_aceito_mas_get_ainda_200_nao_e_ok
+    input: { zone: southamerica-east1-a, disk: dados-velhos, snapshot: dados-velhos-20261020, confirm: true }
+    fake_server:
+      - { method: GET, path: "/zones/southamerica-east1-a/disks/dados-velhos", status: 200, body: { users: [] } }
+      - { method: GET, path: "/global/snapshots/dados-velhos-20261020", status: 200, body: { status: READY, sourceDisk: ".../zones/southamerica-east1-a/disks/dados-velhos", creationTimestamp: "<agora - 1h>" } }
+      - { method: DELETE, path: "/zones/southamerica-east1-a/disks/dados-velhos", status: 200, body: { selfLink: ".../operations/op-1" } }
+      - { method: GET, path: "/zones/southamerica-east1-a/disks/dados-velhos", status: 200, body: { name: dados-velhos }, repeat: 9 }
+    output_expected: { ok: false, proof: { checked: true, passed: false, attempts: 9 }, error: "accepted by the server, but the re-read does not show the requested state" }
+  - name: delete_confirmado_e_provado_pelo_404
+    input: { zone: southamerica-east1-a, disk: dados-velhos, snapshot: dados-velhos-20261020, confirm: true }
+    fake_server:
+      - { method: GET, path: "/zones/southamerica-east1-a/disks/dados-velhos", status: 200, body: { users: [] } }
+      - { method: GET, path: "/global/snapshots/dados-velhos-20261020", status: 200, body: { status: READY, sourceDisk: ".../zones/southamerica-east1-a/disks/dados-velhos", creationTimestamp: "<agora - 1h>" } }
+      - { method: DELETE, path: "/zones/southamerica-east1-a/disks/dados-velhos", status: 200, body: { selfLink: ".../operations/op-1" } }
+      - { method: GET, path: "/zones/southamerica-east1-a/disks/dados-velhos", status: 404 }
+    output_expected: { ok: true, proof: { checked: true, passed: true, attempts: 1 }, inverse: { capability: gcp.disk.create_from_snapshot } }
+
+---
+# Capacidades de apoio que o compilador exige existir (R3, R5): leituras referenciadas
+# em precondition/proof e a inversa. Versões mínimas, para o conjunto fechar.
+mapi: "0.1"
+capability: gcp.disk.get
+version: 1
+title: Ler um disco do Compute
+when_to_use: "Metadados de um disco persistente (status, users, sizeGb). 404 se não existe."
+effect: read
+input: { type: object, additionalProperties: false, required: [zone, disk], properties: { zone: { type: string }, disk: { type: string } } }
+output: { type: object, properties: { status: { type: integer }, body: { type: object } } }
+budget: { cost: { amount: 0, unit: USD }, max_output_bytes: 16384 }
+bindings:
+  http: { method: GET, url: "https://factory.internal/api/v1/gcp/disks/{zone}/{disk}", auth: bearer }
+  mcp: { tool: gcp_disk_get }
+examples: [{ name: disco_existente, input: { zone: southamerica-east1-a, disk: d }, output_expected: { status: 200 } }]
+
+---
+mapi: "0.1"
+capability: gcp.snapshot.get
+version: 1
+title: Ler um snapshot do Compute
+when_to_use: "Status, sourceDisk e creationTimestamp de um snapshot global. 404 se não existe."
+effect: read
+input: { type: object, additionalProperties: false, required: [snapshot], properties: { snapshot: { type: string } } }
+output: { type: object, properties: { status: { type: integer }, body: { type: object } } }
+budget: { cost: { amount: 0, unit: USD }, max_output_bytes: 16384 }
+bindings:
+  http: { method: GET, url: "https://factory.internal/api/v1/gcp/snapshots/{snapshot}", auth: bearer }
+  mcp: { tool: gcp_snapshot_get }
+examples: [{ name: snapshot_pronto, input: { snapshot: s }, output_expected: { status: 200 } }]
+
+---
+mapi: "0.1"
+capability: gcp.disk.create_from_snapshot
+version: 1
+title: Recriar disco a partir de snapshot
+when_to_use: "Cria o disco {disk} em {zone} a partir do snapshot. É a volta de gcp.disk.delete. Seco por padrão."
+effect: write
+idempotent: true        # disco já existente com o mesmo nome → 409 tratado como 'nada a fazer' se sourceSnapshot bate
+input: { type: object, additionalProperties: false, required: [zone, disk, snapshot], properties: { zone: { type: string }, disk: { type: string }, snapshot: { type: string } } }
+output: { type: object, properties: { operation: { type: string } } }
+consent: { dry_run: default, confirm: { parameter: confirm } }
+reversible:
+  inverse: { capability: gcp.disk.delete, args: { zone: "$.input.zone", disk: "$.input.disk", snapshot: "$.input.snapshot", confirm: true } }
+proof:
+  read: { capability: gcp.disk.get, args: { zone: "$.input.zone", disk: "$.input.disk" } }
+  expect: [{ context: "$.response.body", condition: "$.status == 'READY' && $.sourceSnapshot endsWith '/snapshots/' + $.input.snapshot", type: simple }]
+  within_s: 120
+  interval_s: 10
+budget: { cost: { amount: 0, unit: USD }, max_output_bytes: 4096, max_duration_s: 180 }
+bindings:
+  http: { method: POST, url: "https://factory.internal/api/v1/gcp/disks/{zone}?confirm={confirm}", auth: bearer }
+  mcp: { tool: gcp_disk_create_from_snapshot }
+examples: [{ name: seco, input: { zone: southamerica-east1-a, disk: d, snapshot: s }, dry_run_expected: { would_do: "POST .../zones/southamerica-east1-a/disks {name: d, sourceSnapshot: .../snapshots/s}" } }]

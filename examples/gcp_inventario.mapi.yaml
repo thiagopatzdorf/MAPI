@@ -1,0 +1,74 @@
+# Exemplo 1 — leitura pura, derivado de gcp.inventario (an in-house GCP inventory tool)
+# Fonte do comportamento hoje: "tudo o que roda no projeto numa chamada; seção que
+# falha vira erro na seção, nunca derruba as outras".
+mapi: "0.1"
+capability: gcp.inventario
+version: 1
+title: Inventário do projeto GCP
+when_to_use: >-
+  Tudo o que roda no projeto numa chamada: VMs, Cloud Run, Cloud SQL, buckets,
+  Scheduler e filas. Chame antes de qualquer gcp_* de escrita. Seção que falha vem
+  com `erro` na própria seção; as outras continuam.
+when_not_to_use: >-
+  Logs (gcp.logs) e custo (gcp.custo) têm capacidade própria.
+
+effect: read
+open_world: false        # domínio fechado: um projeto, contas do cofre
+
+input:
+  type: object
+  additionalProperties: false
+  properties: {}
+
+output:
+  type: object
+  required: [projeto, regiao, vms, cloud_run, cloud_sql, buckets, agendador, filas]
+  properties:
+    projeto: { type: string }
+    regiao: { type: string }
+    vms:
+      $ref: "#/x-mapi-defs/secao"
+    cloud_run: { $ref: "#/x-mapi-defs/secao" }
+    cloud_sql: { $ref: "#/x-mapi-defs/secao" }
+    buckets: { $ref: "#/x-mapi-defs/secao" }
+    agendador: { $ref: "#/x-mapi-defs/secao" }
+    filas: { $ref: "#/x-mapi-defs/secao" }
+
+x-mapi-defs:
+  secao:
+    description: "Uma seção do inventário: {ok: true, conta, <lista>} ou {ok: false, status, conta, erro}"
+    type: object
+    required: [ok]
+    properties:
+      ok: { type: boolean }
+      conta: { type: string, enum: [reader, admin], description: "qual conta do cofre serviu (escalada só no 403)" }
+      erro: { type: string }
+
+budget:
+  cost: { amount: 0, unit: USD }     # 6 GETs no Compute/Run/SQL/Storage/Scheduler/Tasks: sem custo por chamada
+  max_output_bytes: 262144            # 256 KiB: inventário real medido em 2026-10 cabe em ~40 KiB
+  max_duration_s: 30
+  rate: { per: minute, max: 60 }
+
+bindings:
+  http:
+    method: GET
+    url: "https://factory.internal/api/v1/gcp/inventario"
+    auth: bearer
+  mcp:
+    tool: gcp_inventario
+  python:
+    callable: "factory_cauteloso.gcp:inventario"
+
+examples:
+  - name: projeto_vazio_responde_estrutura_inteira
+    input: {}
+    output_expected:
+      projeto: my-gcp-project
+      regiao: southamerica-east1
+      vms: { ok: true, conta: reader, vms: [] }
+      cloud_run: { ok: true, conta: reader, servicos: [] }
+      cloud_sql: { ok: false, status: 403, conta: admin, erro: "permission denied" }
+      buckets: { ok: true, conta: reader, buckets: [] }
+      agendador: { ok: true, conta: reader, jobs: [] }
+      filas: { ok: true, conta: reader, filas: [] }

@@ -1,0 +1,85 @@
+{
+  "_comment": "ALVO do teste: as duas entradas de tools/list que `mapi build --mcp` deve emitir de cloudflare_rest.mapi.yaml. Hoje a casa tem UMA tool `cloudflare_rest` sem annotations; o MAPI emite duas, com annotations honestas por efeito.",
+  "tools": [
+    {
+      "name": "cloudflare_rest_get",
+      "title": "Ler qualquer endpoint da API v4 do Cloudflare",
+      "description": "GET em qualquer caminho da API v4 (/zones/..., /accounts/...) que ainda não tem capacidade própria. Devolve `result` já desembrulhado. Use antes de escrever, para saber o estado atual. Not for: Inventário, uso e erros têm capacidade própria (cloudflare.inventario, cloudflare.uso, cloudflare.erros).",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path"],
+        "properties": {
+          "path": { "type": "string", "pattern": "^/(?!/)", "maxLength": 512, "description": "caminho relativo à API v4, ex. /zones/<id>/dns_records" }
+        }
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": ["ok", "dry_run", "result", "budget"],
+        "properties": {
+          "ok": { "type": "boolean" },
+          "dry_run": { "type": "boolean", "const": false },
+          "result": { "type": "object", "required": ["status", "result"], "properties": { "status": { "type": "integer" }, "result": {}, "error": { "type": "string" } } },
+          "budget": { "type": "object", "properties": { "cost": { "type": "object" }, "output_bytes": { "type": "integer" }, "truncated": { "type": "boolean" } } }
+        }
+      },
+      "annotations": { "title": "Ler qualquer endpoint da API v4 do Cloudflare", "readOnlyHint": true, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false }
+    },
+    {
+      "name": "cloudflare_rest_write",
+      "title": "Escrever em qualquer endpoint da API v4 do Cloudflare",
+      "description": "POST, PUT ou PATCH em qualquer caminho da API v4 sem capacidade própria. Seco por padrão: sem confirm=true só mostra o que faria. Guarda o estado anterior (GET no mesmo caminho) para a volta. Dry run by default: pass confirm=true to execute. Refuses: DELETE (use cloudflare_apagar). Inverse: cloudflare_rest_write PUT of state_before, or cloudflare_apagar if the call created the resource. Proof: re-read via cloudflare_rest_get within 30 s. Not for: DELETE nunca passa aqui (cloudflare.apagar, com prova de volta). Publicar site é cloudflare.publicar; limpar cache é cloudflare.cache.",
+      "inputSchema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["method", "path"],
+        "properties": {
+          "method": { "type": "string", "enum": ["POST", "PUT", "PATCH", "DELETE"], "description": "DELETE é recusado (ver refuses); está no enum para a recusa ser explícita, não um erro de schema" },
+          "path": { "type": "string", "pattern": "^/(?!/)", "maxLength": 512 },
+          "body": { "type": "object" },
+          "confirm": { "type": "boolean", "default": false, "description": "false (padrão) = dry run: devolve would_do e inverse sem executar. true = executa e prova pela releitura." }
+        }
+      },
+      "outputSchema": {
+        "oneOf": [
+          { "$ref": "#/$defs/dry_run" },
+          { "$ref": "#/$defs/refused" },
+          { "$ref": "#/$defs/executed" }
+        ],
+        "$defs": {
+          "inverse": { "type": "object", "required": ["capability", "args"], "properties": { "capability": { "type": "string" }, "args": { "type": "object" } } },
+          "dry_run": {
+            "type": "object", "required": ["ok", "dry_run", "would_do", "to_execute"],
+            "properties": { "ok": { "const": true }, "dry_run": { "const": true }, "would_do": { "type": "string" }, "refused": { "type": "null" }, "inverse": { "$ref": "#/$defs/inverse" }, "to_execute": { "const": "repeat with confirm=true" } }
+          },
+          "refused": {
+            "type": "object", "required": ["ok", "refused"],
+            "properties": { "ok": { "const": false }, "refused": { "type": "object", "required": ["id", "reason"], "properties": { "id": { "type": "string" }, "reason": { "type": "string" } } } }
+          },
+          "executed": {
+            "type": "object", "required": ["ok", "dry_run", "result", "state_before", "proof", "inverse", "budget"],
+            "properties": {
+              "ok": { "type": "boolean" },
+              "dry_run": { "const": false },
+              "result": { "type": "object" },
+              "state_before": { "type": "object" },
+              "proof": { "type": "object", "required": ["checked", "passed"], "properties": { "checked": { "type": "boolean" }, "passed": { "type": "boolean" }, "read_at": { "type": "string" }, "attempts": { "type": "integer" } } },
+              "inverse": { "$ref": "#/$defs/inverse" },
+              "budget": { "type": "object" },
+              "error": { "type": "string" }
+            }
+          }
+        }
+      },
+      "annotations": { "title": "Escrever em qualquer endpoint da API v4 do Cloudflare", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false },
+      "_meta": {
+        "io.mapi/capability": "cloudflare.rest.write@1",
+        "io.mapi/effect": "write",
+        "io.mapi/consent": { "dry_run": "default", "confirm": "confirm" },
+        "io.mapi/inverse": "cloudflare.rest.write",
+        "io.mapi/proof": "cloudflare.rest.get"
+      }
+    }
+  ],
+  "_mrtr_note": "Com cliente que declara elicitation, a chamada sem confirm devolve {resultType: 'input_required', inputRequests: {confirm: {method: 'elicitation/create', params: {mode: 'form', message: '<would_do>. Executar?', requestedSchema: {type: 'object', properties: {confirm: {type: 'boolean'}}, required: ['confirm']}}}}, requestState: '<opaco>'} e executa na repetição com inputResponses.confirm.content.confirm == true. Sem elicitation, o booleano `confirm` no input faz o mesmo papel."
+}

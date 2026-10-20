@@ -1,0 +1,63 @@
+{
+  "_comment": "ALVO do teste: a tool que `mapi build --mcp` deve emitir de gcp.disk.delete (receita_apagar.mapi.yaml). Única das três com destructiveHint: true.",
+  "name": "gcp_disk_delete",
+  "title": "Apagar disco do Compute com prova de volta",
+  "description": "Apaga um disco persistente SÓ quando existe um snapshot READY dele com menos de 24 h. Seco por padrão. Confirmado, só diz ok quando o GET do disco devolve 404. A volta é recriar o disco a partir do snapshot. Dry run by default: pass confirm=true to execute. Requires: snapshot READY of this disk younger than 24 h; disk not attached. Refuses: ops-host / control-plane disks. Inverse: gcp_disk_create_from_snapshot. Proof: gcp_disk_get returns 404 within 45 s. Not for: Disco em uso por VM (desanexe antes) e discos da ops-host / control-plane (decisão do dono, não de receita).",
+  "inputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["zone", "disk", "snapshot"],
+    "properties": {
+      "zone": { "type": "string", "pattern": "^[a-z]+-[a-z]+[0-9]-[a-z]$", "examples": ["southamerica-east1-a"] },
+      "disk": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$" },
+      "snapshot": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$", "description": "nome do snapshot que serve de prova de reconstrução" },
+      "confirm": { "type": "boolean", "default": false, "description": "false (padrão) = dry run: confere pré-condições e devolve would_do + inverse. true = apaga e prova pelo 404." }
+    }
+  },
+  "outputSchema": {
+    "oneOf": [
+      {
+        "type": "object", "required": ["ok", "dry_run", "would_do", "precondition", "inverse", "to_execute"],
+        "properties": { "ok": { "const": true }, "dry_run": { "const": true }, "would_do": { "type": "string" }, "precondition": { "type": "object" }, "inverse": { "$ref": "#/$defs/inverse" }, "to_execute": { "const": "repeat with confirm=true" } }
+      },
+      {
+        "type": "object", "required": ["ok", "refused"],
+        "properties": { "ok": { "const": false }, "refused": { "type": "object", "required": ["id", "reason"] } }
+      },
+      {
+        "type": "object", "required": ["ok", "dry_run", "result", "proof", "inverse", "budget"],
+        "properties": {
+          "ok": { "type": "boolean" },
+          "dry_run": { "const": false },
+          "result": { "type": "object", "properties": { "deleted": { "type": "boolean" }, "operation": { "type": "string" } } },
+          "proof": { "type": "object", "required": ["checked", "passed"], "properties": { "checked": { "type": "boolean" }, "passed": { "type": "boolean" }, "attempts": { "type": "integer" }, "read_at": { "type": "string" } } },
+          "inverse": { "$ref": "#/$defs/inverse" },
+          "budget": { "type": "object" },
+          "error": { "type": "string" }
+        }
+      }
+    ],
+    "$defs": { "inverse": { "type": "object", "required": ["capability", "args"], "properties": { "capability": { "type": "string" }, "args": { "type": "object" } } } }
+  },
+  "annotations": {
+    "title": "Apagar disco do Compute com prova de volta",
+    "readOnlyHint": false,
+    "destructiveHint": true,
+    "idempotentHint": true,
+    "openWorldHint": false
+  },
+  "_meta": {
+    "io.mapi/capability": "gcp.disk.delete@1",
+    "io.mapi/effect": "destroy",
+    "io.mapi/consent": { "dry_run": "default", "confirm": "confirm" },
+    "io.mapi/precondition": ["disk", "snapshot"],
+    "io.mapi/inverse": "gcp.disk.create_from_snapshot",
+    "io.mapi/proof": "gcp.disk.get"
+  },
+  "_refused_result_example": {
+    "resultType": "complete",
+    "isError": true,
+    "content": [{ "type": "text", "text": "{\"ok\": false, \"refused\": {\"id\": \"precondition.snapshot\", \"reason\": \"prova 'outro-20261020' é de outro recurso (.../disks/outro)\"}}" }],
+    "structuredContent": { "ok": false, "refused": { "id": "precondition.snapshot", "reason": "prova 'outro-20261020' é de outro recurso (.../disks/outro)" } }
+  }
+}

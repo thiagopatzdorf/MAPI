@@ -1,0 +1,145 @@
+# ALVO do teste: `mapi build --openapi` de cloudflare_rest.mapi.yaml (duas capacidades → duas operações)
+openapi: 3.1.0
+info: { title: Example capabilities, version: "1", x-mapi: "0.1" }
+servers: [{ url: https://factory.internal/api/v1 }]
+paths:
+  /cloudflare/rest{path}:
+    parameters:
+      - { name: path, in: path, required: true, schema: { type: string, pattern: "^/(?!/)", maxLength: 512 }, description: "caminho relativo à API v4, ex. /zones/<id>/dns_records" }
+    get:
+      operationId: cloudflare_rest_get
+      tags: [cloudflare]
+      summary: Ler qualquer endpoint da API v4 do Cloudflare
+      description: "GET em qualquer caminho da API v4 (/zones/..., /accounts/...) que ainda não tem capacidade própria. Devolve `result` já desembrulhado. Use antes de escrever, para saber o estado atual."
+      x-mapi-effect: read
+      x-mapi-version: 1
+      x-mapi-budget: { cost: { amount: 0, unit: USD }, max_output_bytes: 131072, max_duration_s: 120, rate: { per: minute, max: 1200 } }
+      x-openai-isConsequential: false
+      x-speakeasy-mcp: { name: cloudflare_rest_get, scopes: [read] }
+      security: [{ bearer: [] }]
+      responses:
+        "200":
+          description: Leitura (envelope MAPI)
+          content: { application/json: { schema: { $ref: "#/components/schemas/MapiEnvelope_read_cloudflare_rest" } } }
+    post:
+      operationId: cloudflare_rest_write
+      tags: [cloudflare]
+      summary: Escrever em qualquer endpoint da API v4 do Cloudflare
+      description: >-
+        POST, PUT ou PATCH em qualquer caminho da API v4 sem capacidade própria.
+        Seco por padrão: sem confirm=true só mostra o que faria. Guarda o estado anterior
+        (GET no mesmo caminho) para a volta. Requires nothing. Inverse: cloudflare_rest_write
+        (PUT of state_before) or cloudflare_apagar when the call created the resource.
+      x-mapi-effect: write
+      x-mapi-idempotent: false
+      x-mapi-version: 1
+      x-mapi-consent:
+        dry_run: default
+        confirm: { parameter: confirm }
+        refuses:
+          - { id: delete_sem_prova, when: "$.input.method == 'DELETE'", reason: "DELETE não passa por aqui: derrubar exige prova de volta (cloudflare.apagar)" }
+          - { id: caminho_fora_da_api, when: "$.input.path startsWith '//'", reason: "caminho relativo à API v4" }
+      x-mapi-reversible:
+        inverse:
+          operationId: cloudflare_rest_write
+          captures_state_before: true
+          args: { method: PUT, path: "$.input.path", body: "$.state_before.result", confirm: true }
+          when_created: { operationId: cloudflare_apagar, args: { tipo: "$.derived.tipo", nome: "$.output.result.id" } }
+      x-mapi-proof:
+        operationId: cloudflare_rest_get
+        args: { path: "$.input.path" }
+        expect: [{ context: "$.response.result", condition: "$ ⊇ $.input.body", type: simple }]
+        within_s: 30
+        interval_s: 5
+      x-mapi-budget: { cost: { amount: 0, unit: USD }, max_output_bytes: 131072, max_duration_s: 120, rate: { per: minute, max: 1200 } }
+      x-openai-isConsequential: true
+      x-speakeasy-mcp: { name: cloudflare_rest_write, scopes: [write] }
+      security: [{ bearer: [] }]
+      parameters:
+        - { name: confirm, in: query, required: false, schema: { type: boolean, default: false }, description: "false (padrão) = seco: só descreve o que faria. true = executa." }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [method]
+              properties:
+                method: { type: string, enum: [POST, PUT, PATCH, DELETE] }
+                body: { type: object }
+            examples:
+              patch_ttl_seco_mostra_o_que_faria: { value: { method: PATCH, body: { ttl: 60 } } }
+      responses:
+        "202":
+          description: Dry run (confirm ausente ou false) — nada foi executado
+          content: { application/json: { schema: { $ref: "#/components/schemas/MapiDryRun" } } }
+        "200":
+          description: Executado e provado pela releitura
+          content: { application/json: { schema: { $ref: "#/components/schemas/MapiEnvelope_write_cloudflare_rest" } } }
+          links:
+            proof:
+              operationId: cloudflare_rest_get
+              parameters: { path: "$request.path.path" }
+              description: releitura que prova o estado (x-mapi-proof)
+            inverse:
+              operationId: cloudflare_rest_write
+              parameters: { path: "$request.path.path", confirm: true }
+              requestBody: { method: PUT, body: "$response.body#/state_before/result" }
+              description: desfaz (x-mapi-reversible.inverse)
+        "409":
+          description: Recusado antes do seco (refuses) ou pré-condição não satisfeita
+          content: { application/json: { schema: { $ref: "#/components/schemas/MapiRefused" } } }
+        "502":
+          description: Aceito pelo Cloudflare mas a releitura não mostra o estado pedido (ok=false, proof.passed=false)
+          content: { application/json: { schema: { $ref: "#/components/schemas/MapiEnvelope_write_cloudflare_rest" } } }
+components:
+  securitySchemes: { bearer: { type: http, scheme: bearer } }
+  schemas:
+    MapiDryRun:
+      type: object
+      required: [ok, dry_run, would_do, to_execute]
+      properties:
+        ok: { type: boolean, const: true }
+        dry_run: { type: boolean, const: true }
+        would_do: { type: string }
+        refused: { type: "null" }
+        inverse: { $ref: "#/components/schemas/MapiInverse" }
+        to_execute: { type: string, const: "repeat with confirm=true" }
+    MapiRefused:
+      type: object
+      required: [ok, refused]
+      properties:
+        ok: { type: boolean, const: false }
+        refused: { type: object, required: [id, reason], properties: { id: { type: string }, reason: { type: string } } }
+    MapiInverse:
+      type: object
+      required: [capability, args]
+      properties: { capability: { type: string }, args: { type: object } }
+    MapiProof:
+      type: object
+      required: [checked, passed]
+      properties: { checked: { type: boolean }, passed: { type: boolean }, read_at: { type: string, format: date-time }, attempts: { type: integer } }
+    MapiBudgetUsed:
+      type: object
+      properties: { cost: { type: object }, output_bytes: { type: integer }, truncated: { type: boolean } }
+    MapiEnvelope_read_cloudflare_rest:
+      type: object
+      required: [ok, dry_run, result, budget]
+      properties:
+        ok: { type: boolean }
+        dry_run: { type: boolean, const: false }
+        result: { type: object, required: [status, result], properties: { status: { type: integer }, result: {}, error: { type: string } } }
+        budget: { $ref: "#/components/schemas/MapiBudgetUsed" }
+    MapiEnvelope_write_cloudflare_rest:
+      type: object
+      required: [ok, dry_run, result, state_before, proof, inverse, budget]
+      properties:
+        ok: { type: boolean }
+        dry_run: { type: boolean, const: false }
+        result: { type: object, required: [status, result], properties: { status: { type: integer }, result: {}, error: { type: string } } }
+        state_before: { type: object }
+        proof: { $ref: "#/components/schemas/MapiProof" }
+        inverse: { $ref: "#/components/schemas/MapiInverse" }
+        budget: { $ref: "#/components/schemas/MapiBudgetUsed" }
+        error: { type: string }

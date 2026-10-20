@@ -1,0 +1,103 @@
+# ALVO do teste: `mapi build --openapi` de receita_apagar.mapi.yaml (recorte: só a operação destrutiva; as de apoio seguem o padrão do exemplo 1/2)
+openapi: 3.1.0
+info: { title: Example capabilities, version: "1", x-mapi: "0.1" }
+servers: [{ url: https://factory.internal/api/v1 }]
+paths:
+  /gcp/disks/{zone}/{disk}:
+    parameters:
+      - { name: zone, in: path, required: true, schema: { type: string, pattern: "^[a-z]+-[a-z]+[0-9]-[a-z]$" } }
+      - { name: disk, in: path, required: true, schema: { type: string, pattern: "^[a-z][a-z0-9-]{0,62}$" } }
+    get:
+      operationId: gcp_disk_get
+      tags: [gcp]
+      summary: Ler um disco do Compute
+      x-mapi-effect: read
+      x-openai-isConsequential: false
+      x-speakeasy-mcp: { scopes: [read] }
+      responses:
+        "200": { description: Disco, content: { application/json: { schema: { type: object } } } }
+        "404": { description: Não existe }
+    delete:
+      operationId: gcp_disk_delete
+      tags: [gcp]
+      summary: Apagar disco do Compute com prova de volta
+      description: >-
+        Apaga um disco persistente SÓ quando existe um snapshot READY dele com menos de
+        24 h. Seco por padrão. Confirmado, só diz ok quando o GET do disco devolve 404.
+        A volta é recriar o disco a partir do snapshot.
+        Requires: snapshot READY of this disk, younger than 24 h; disk not attached.
+        Refuses: ops-host / control-plane disks. Inverse: gcp_disk_create_from_snapshot.
+      x-mapi-effect: destroy
+      x-mapi-idempotent: true
+      x-mapi-version: 1
+      x-mapi-consent:
+        dry_run: default
+        confirm: { parameter: confirm }
+        refuses:
+          - { id: disco_intocavel, when: "$.input.disk startsWith 'ops-host' || $.input.disk startsWith 'control-plane'", reason: "disco da ops-host ou do control-plane da loja: não se apaga por receita" }
+          - { id: disco_em_uso, when: "length($.evidence.disk.users) > 0", reason: "disco em uso por uma VM; desanexe antes" }
+      x-mapi-precondition:
+        evidence:
+          - { id: disk, operationId: gcp_disk_get, args: { zone: "$.input.zone", disk: "$.input.disk" }, expect: [{ context: "$.response", condition: "$.status == 200", type: simple }] }
+          - { id: snapshot, operationId: gcp_snapshot_get, args: { snapshot: "$.input.snapshot" }, max_age_s: 86400, age_field: "$.response.body.creationTimestamp",
+              expect: [{ context: "$.response.body", condition: "$.status == 'READY'", type: simple }, { context: "$.response.body", condition: "$.sourceDisk endsWith '/zones/' + $.input.zone + '/disks/' + $.input.disk", type: simple }] }
+      x-mapi-reversible:
+        inverse: { operationId: gcp_disk_create_from_snapshot, args: { zone: "$.input.zone", disk: "$.input.disk", snapshot: "$.input.snapshot", confirm: true } }
+      x-mapi-proof:
+        operationId: gcp_disk_get
+        args: { zone: "$.input.zone", disk: "$.input.disk" }
+        expect: [{ context: "$.response", condition: "$.status == 404", type: simple }]
+        within_s: 45
+        interval_s: 5
+      x-mapi-budget: { cost: { amount: 0, unit: USD }, max_output_bytes: 4096, max_duration_s: 90 }
+      x-mapi-audit: { record_before_execute: true }
+      x-openai-isConsequential: true
+      x-speakeasy-mcp: { name: gcp_disk_delete, scopes: [write, destroy] }
+      security: [{ bearer: [] }]
+      parameters:
+        - { name: snapshot, in: query, required: true, schema: { type: string, pattern: "^[a-z][a-z0-9-]{0,62}$" }, description: "snapshot que serve de prova de reconstrução" }
+        - { name: confirm, in: query, required: false, schema: { type: boolean, default: false }, description: "false = seco (confere pré-condições e mostra DELETE + volta); true = executa e prova pelo 404" }
+      responses:
+        "202":
+          description: Dry run — pré-condições conferidas, nada apagado
+          content: { application/json: { schema: { $ref: "#/components/schemas/MapiDryRunWithPrecondition" } } }
+        "200":
+          description: Apagado e provado (GET devolveu 404 dentro de 45 s)
+          content: { application/json: { schema: { $ref: "#/components/schemas/MapiEnvelope_destroy_gcp_disk" } } }
+          links:
+            proof: { operationId: gcp_disk_get, parameters: { zone: "$request.path.zone", disk: "$request.path.disk" } }
+            inverse: { operationId: gcp_disk_create_from_snapshot, parameters: { zone: "$request.path.zone", disk: "$request.path.disk", snapshot: "$request.query.snapshot", confirm: true } }
+        "409":
+          description: Recusado (refuses) ou pré-condição falhou (snapshot não é deste disco, > 24 h, disco em uso)
+          content: { application/json: { schema: { $ref: "#/components/schemas/MapiRefused" } } }
+        "502":
+          description: DELETE aceito, mas o disco ainda responde 200 depois de 45 s (ok=false)
+          content: { application/json: { schema: { $ref: "#/components/schemas/MapiEnvelope_destroy_gcp_disk" } } }
+components:
+  securitySchemes: { bearer: { type: http, scheme: bearer } }
+  schemas:
+    MapiRefused:
+      type: object
+      required: [ok, refused]
+      properties: { ok: { const: false }, refused: { type: object, required: [id, reason], properties: { id: { type: string }, reason: { type: string } } } }
+    MapiDryRunWithPrecondition:
+      type: object
+      required: [ok, dry_run, would_do, precondition, inverse, to_execute]
+      properties:
+        ok: { const: true }
+        dry_run: { const: true }
+        would_do: { type: string }
+        precondition: { type: object, additionalProperties: { type: string, enum: [ok] } }
+        inverse: { type: object, required: [capability, args] }
+        to_execute: { const: "repeat with confirm=true" }
+    MapiEnvelope_destroy_gcp_disk:
+      type: object
+      required: [ok, dry_run, result, proof, inverse, budget]
+      properties:
+        ok: { type: boolean }
+        dry_run: { const: false }
+        result: { type: object, properties: { deleted: { type: boolean }, operation: { type: string } } }
+        proof: { type: object, required: [checked, passed], properties: { checked: { type: boolean }, passed: { type: boolean }, attempts: { type: integer }, read_at: { type: string } } }
+        inverse: { type: object, required: [capability, args] }
+        budget: { type: object }
+        error: { type: string }

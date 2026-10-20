@@ -1,0 +1,177 @@
+# Exemplo 2 — gateway REST genérico, derivado de cloudflare.rest (código privado):
+#   "GET livre; POST/PUT/PATCH com confirmar=True; DELETE recusado".
+#
+# Decisão de desenho: hoje é UMA tool (`cloudflare_rest`) cujo efeito depende do
+# argumento `metodo`. Uma tool assim não consegue carregar annotations honestas
+# (readOnlyHint é por tool, não por argumento). O MAPI a divide em DUAS
+# capacidades no mesmo arquivo (documentos YAML separados por `---`): uma de
+# leitura e uma de escrita. A de escrita recusa DELETE antes do seco e tem como
+# inversa a si mesma com o `state_before` capturado (PUT do que estava lá).
+mapi: "0.1"
+capability: cloudflare.rest.get
+version: 1
+title: Ler qualquer endpoint da API v4 do Cloudflare
+when_to_use: >-
+  GET em qualquer caminho da API v4 (/zones/..., /accounts/...) que ainda não tem
+  capacidade própria. Devolve `result` já desembrulhado. Use antes de escrever,
+  para saber o estado atual.
+when_not_to_use: >-
+  Inventário, uso e erros têm capacidade própria (cloudflare.inventario, cloudflare.uso,
+  cloudflare.erros).
+
+effect: read
+open_world: false
+
+input:
+  type: object
+  additionalProperties: false
+  required: [path]
+  properties:
+    path:
+      type: string
+      pattern: "^/(?!/)"
+      maxLength: 512
+      description: "caminho relativo à API v4, ex. /zones/<id>/dns_records"
+
+output:
+  type: object
+  required: [status, result]
+  properties:
+    status: { type: integer }
+    result: {}
+    error: { type: string }
+
+budget:
+  cost: { amount: 0, unit: USD }
+  max_output_bytes: 131072
+  max_duration_s: 120
+  rate: { per: minute, max: 1200 }   # limite documentado da API v4 (1200 req/5 min) — conferir
+
+bindings:
+  http:
+    method: GET
+    url: "https://factory.internal/api/v1/cloudflare/rest{path}"
+    auth: bearer
+  mcp:
+    tool: cloudflare_rest_get
+  python:
+    callable: "factory_cauteloso.cloudflare:rest"
+    fixed_args: { metodo: GET }
+
+examples:
+  - name: le_registro_dns
+    input: { path: "/zones/1a11cf9d73dbb7163ff8d51cd2e24fdb/dns_records/abc" }
+    output_expected: { status: 200, result: { id: abc, type: A, name: x.genesisinnovation.io, content: "203.0.113.5", ttl: 300, proxied: true } }
+  - name: caminho_absoluto_e_recusado_pelo_schema
+    input: { path: "https://evil.example/x" }
+    error_expected: input_invalid
+
+---
+mapi: "0.1"
+capability: cloudflare.rest.write
+version: 1
+title: Escrever em qualquer endpoint da API v4 do Cloudflare
+when_to_use: >-
+  POST, PUT ou PATCH em qualquer caminho da API v4 sem capacidade própria.
+  Seco por padrão: sem confirm=true só mostra o que faria. Guarda o estado anterior
+  (GET no mesmo caminho) para a volta.
+when_not_to_use: >-
+  DELETE nunca passa aqui (cloudflare.apagar, com prova de volta). Publicar site é
+  cloudflare.publicar; limpar cache é cloudflare.cache.
+
+effect: write
+idempotent: false      # POST cria; PUT/PATCH são idempotentes mas a capacidade inteira não é
+open_world: false
+
+input:
+  type: object
+  additionalProperties: false
+  required: [method, path]
+  properties:
+    method: { type: string, enum: [POST, PUT, PATCH, DELETE], description: "DELETE é recusado (ver refuses); está no enum para a recusa ser explícita, não um erro de schema" }
+    path: { type: string, pattern: "^/(?!/)", maxLength: 512 }
+    body: { type: object }
+
+output:
+  type: object
+  required: [status, result]
+  properties:
+    status: { type: integer }
+    result: {}
+    error: { type: string }
+
+consent:
+  dry_run: default
+  confirm: { parameter: confirm }
+  refuses:
+    - id: delete_sem_prova
+      when: "$.input.method == 'DELETE'"
+      reason: "DELETE não passa por aqui: derrubar exige prova de volta (cloudflare.apagar)"
+    - id: caminho_fora_da_api
+      when: "$.input.path startsWith '//'"
+      reason: "caminho relativo à API v4, ex. /zones/<id>/dns_records"
+
+reversible:
+  inverse:
+    capability: cloudflare.rest.write
+    captures_state_before: true           # GET $.input.path antes de escrever; vira $.state_before
+    args:
+      method: "PUT"
+      path: "$.input.path"
+      body: "$.state_before.result"
+      confirm: true
+    note: >-
+      Para POST que cria recurso novo (state_before = 404) a volta é DELETE, que esta
+      capacidade recusa: o envelope devolve inverse.capability = cloudflare.apagar com
+      o id criado — o compilador resolve pelo ramo `when: $.state_before.status == 404`.
+    when_created:
+      capability: cloudflare.apagar
+      args: { tipo: "$.derived.tipo", nome: "$.output.result.id" }
+
+proof:
+  read: { capability: cloudflare.rest.get, args: { path: "$.input.path" } }
+  expect:
+    - { context: "$.response.result", condition: "$ ⊇ $.input.body", type: simple, note: "todo campo enviado aparece igual na releitura" }
+  within_s: 30
+  interval_s: 5
+
+budget:
+  cost: { amount: 0, unit: USD }
+  max_output_bytes: 131072
+  max_duration_s: 120
+  rate: { per: minute, max: 1200 }
+
+bindings:
+  http:
+    method: POST
+    url: "https://factory.internal/api/v1/cloudflare/rest{path}?confirm={confirm}"
+    auth: bearer
+    note: "o método real da API v4 vai no body (`method`); o binding HTTP do gateway é sempre POST porque a chamada é 'executar uma escrita'"
+  mcp:
+    tool: cloudflare_rest_write
+  python:
+    callable: "factory_cauteloso.cloudflare:rest"
+
+examples:
+  - name: patch_ttl_seco_mostra_o_que_faria
+    input: { method: PATCH, path: "/zones/1a11cf9d73dbb7163ff8d51cd2e24fdb/dns_records/abc", body: { ttl: 60 } }
+    dry_run_expected:
+      would_do: "PATCH /zones/1a11cf9d73dbb7163ff8d51cd2e24fdb/dns_records/abc"
+      inverse: { capability: cloudflare.rest.write, args: { method: PUT, path: "/zones/1a11cf9d73dbb7163ff8d51cd2e24fdb/dns_records/abc", body: { id: abc, type: A, name: x.genesisinnovation.io, content: "203.0.113.5", ttl: 300, proxied: true }, confirm: true } }
+  - name: delete_e_recusado_antes_do_seco
+    input: { method: DELETE, path: "/zones/1a11cf9d73dbb7163ff8d51cd2e24fdb/dns_records/abc" }
+    refused_expected: delete_sem_prova
+  - name: patch_confirmado_so_e_ok_se_a_releitura_mostra_ttl_60
+    input: { method: PATCH, path: "/zones/1a11cf9d73dbb7163ff8d51cd2e24fdb/dns_records/abc", body: { ttl: 60 }, confirm: true }
+    fake_server:
+      - { method: GET, path: "/zones/1a11cf9d73dbb7163ff8d51cd2e24fdb/dns_records/abc", status: 200, body: { result: { id: abc, ttl: 300 } } }   # state_before
+      - { method: PATCH, path: "/zones/1a11cf9d73dbb7163ff8d51cd2e24fdb/dns_records/abc", status: 200, body: { success: true, result: { id: abc, ttl: 60 } } }
+      - { method: GET, path: "/zones/1a11cf9d73dbb7163ff8d51cd2e24fdb/dns_records/abc", status: 200, body: { result: { id: abc, ttl: 60 } } }   # proof
+    output_expected: { ok: true, proof: { checked: true, passed: true } }
+  - name: patch_com_200_mas_releitura_ainda_em_300_nao_e_ok
+    input: { method: PATCH, path: "/zones/1a11cf9d73dbb7163ff8d51cd2e24fdb/dns_records/abc", body: { ttl: 60 }, confirm: true }
+    fake_server:
+      - { method: GET, path: "/zones/1a11cf9d73dbb7163ff8d51cd2e24fdb/dns_records/abc", status: 200, body: { result: { id: abc, ttl: 300 } } }
+      - { method: PATCH, path: "/zones/1a11cf9d73dbb7163ff8d51cd2e24fdb/dns_records/abc", status: 200, body: { success: true, result: { id: abc, ttl: 60 } } }
+      - { method: GET, path: "/zones/1a11cf9d73dbb7163ff8d51cd2e24fdb/dns_records/abc", status: 200, body: { result: { id: abc, ttl: 300 } }, repeat: 7 }
+    output_expected: { ok: false, proof: { checked: true, passed: false, attempts: 7 } }

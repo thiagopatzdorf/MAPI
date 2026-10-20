@@ -1,0 +1,84 @@
+# ALVO do teste: o que `mapi build --openapi` deve emitir de gcp_inventario.mapi.yaml
+openapi: 3.1.0
+info:
+  title: Example capabilities
+  version: "1"
+  x-mapi: "0.1"
+servers:
+  - url: https://factory.internal/api/v1
+paths:
+  /gcp/inventario:
+    get:
+      operationId: gcp_inventario
+      tags: [gcp]
+      summary: Inventário do projeto GCP
+      description: >-
+        Tudo o que roda no projeto numa chamada: VMs, Cloud Run, Cloud SQL, buckets,
+        Scheduler e filas. Chame antes de qualquer gcp_* de escrita. Seção que falha vem
+        com `erro` na própria seção; as outras continuam.
+      x-mapi-effect: read
+      x-mapi-version: 1
+      x-mapi-when-not-to-use: "Logs (gcp.logs) e custo (gcp.custo) têm capacidade própria."
+      x-mapi-budget: { cost: { amount: 0, unit: USD }, max_output_bytes: 262144, max_duration_s: 30, rate: { per: minute, max: 60 } }
+      x-openai-isConsequential: false
+      x-speakeasy-mcp: { name: gcp_inventario, scopes: [read] }
+      security: [{ bearer: [] }]
+      responses:
+        "200":
+          description: Inventário (envelope MAPI de leitura)
+          headers:
+            RateLimit-Policy: { schema: { type: string }, description: '"default";q=60;w=60' }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MapiEnvelope_gcp_inventario" }
+              examples:
+                projeto_vazio_responde_estrutura_inteira:
+                  value:
+                    ok: true
+                    dry_run: false
+                    result:
+                      projeto: my-gcp-project
+                      regiao: southamerica-east1
+                      vms: { ok: true, conta: reader, vms: [] }
+                      cloud_run: { ok: true, conta: reader, servicos: [] }
+                      cloud_sql: { ok: false, status: 403, conta: admin, erro: permission denied }
+                      buckets: { ok: true, conta: reader, buckets: [] }
+                      agendador: { ok: true, conta: reader, jobs: [] }
+                      filas: { ok: true, conta: reader, filas: [] }
+                    budget: { cost: { amount: 0, unit: USD }, output_bytes: 612, truncated: false }
+        "401": { description: Sem credencial }
+components:
+  securitySchemes:
+    bearer: { type: http, scheme: bearer }
+  schemas:
+    MapiSecao:
+      type: object
+      required: [ok]
+      properties:
+        ok: { type: boolean }
+        conta: { type: string, enum: [reader, admin] }
+        erro: { type: string }
+    MapiEnvelope_gcp_inventario:
+      type: object
+      required: [ok, dry_run, result, budget]
+      properties:
+        ok: { type: boolean }
+        dry_run: { type: boolean, const: false }
+        result:
+          type: object
+          required: [projeto, regiao, vms, cloud_run, cloud_sql, buckets, agendador, filas]
+          properties:
+            projeto: { type: string }
+            regiao: { type: string }
+            vms: { $ref: "#/components/schemas/MapiSecao" }
+            cloud_run: { $ref: "#/components/schemas/MapiSecao" }
+            cloud_sql: { $ref: "#/components/schemas/MapiSecao" }
+            buckets: { $ref: "#/components/schemas/MapiSecao" }
+            agendador: { $ref: "#/components/schemas/MapiSecao" }
+            filas: { $ref: "#/components/schemas/MapiSecao" }
+        budget:
+          type: object
+          properties:
+            cost: { type: object, properties: { amount: { type: number }, unit: { type: string } } }
+            output_bytes: { type: integer }
+            truncated: { type: boolean }
