@@ -43,7 +43,7 @@ access:
   data: { at_rest: encrypted }               # what it stores is encrypted to those keys
 ```
 
-`@alice` means the SSH keys GitHub publishes at `github.com/alice.keys`, pinned when she is added.
+`@alice` means the SSH keys GitHub publishes at `github.com/alice.keys`, pinned when they are added.
 The first enforcement already ships: **[git selo](https://github.com/thiagopatzdorf/git-selo)**
 encrypts files inside a normal Git repo to exactly those keys (age format; `.env` committed safely).
 MCP filtering (`tools/list` per caller) and signed HTTP calls are specified but not implemented yet.
