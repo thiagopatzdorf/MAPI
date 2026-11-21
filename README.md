@@ -1,9 +1,18 @@
-# MAPI
+<div align="center">
 
-[![test](https://github.com/thiagopatzdorf/MAPI/actions/workflows/test.yml/badge.svg)](https://github.com/thiagopatzdorf/MAPI/actions/workflows/test.yml)
+# MAPI
 
 **One contract for a capability, readable by programs (API), agents (MCP) and auditors.**
 **Um contrato para uma capacidade, legível por programas (API), agentes (MCP) e auditores.**
+
+[![test](https://github.com/thiagopatzdorf/MAPI/actions/workflows/test.yml/badge.svg)](https://github.com/thiagopatzdorf/MAPI/actions/workflows/test.yml)
+[![license: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+![python ≥ 3.10](https://img.shields.io/badge/python-%E2%89%A5%203.10-3776ab)
+![status: draft v0.1](https://img.shields.io/badge/status-draft%20v0.1-bf8700)
+
+<img src="assets/hero.svg" alt="A MAPI contract with effect, consent, precondition, reversible, proof, budget and access, compiled for programs, agents and auditors." width="820">
+
+</div>
 
 OpenAPI describes what a program can call. MCP describes what an agent can call. Both stop at
 *"what can I call"*. Neither says what happens next: whether it changes state, how to undo it,

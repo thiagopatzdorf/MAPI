@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 320" width="880" height="320" role="img" aria-labelledby="t d">
+  <title id="t">MAPI</title>
+  <desc id="d">One contract per capability, with effect, consent, inverse, proof, budget and access, compiled for programs (OpenAPI), agents (MCP) and auditors (conformance tests).</desc>
+  <style>
+    .bg{fill:#ffffff}.card{fill:#f6f8fa;stroke:#d0d7de}.ink{fill:#1f2328}.mute{fill:#59636e}
+    .key{fill:#8250df}.val{fill:#0a3069}.line{stroke:#8c959f}.acc{fill:#1a7f37}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    .sans{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+    @media (prefers-color-scheme: dark){
+      .bg{fill:#0d1117}.card{fill:#161b22;stroke:#30363d}.ink{fill:#e6edf3}.mute{fill:#9198a1}
+      .key{fill:#d2a8ff}.val{fill:#a5d6ff}.line{stroke:#6e7681}.acc{fill:#3fb950}
+    }
+  </style>
+  <rect class="bg" width="880" height="320" rx="12"/>
+
+  <!-- contract -->
+  <rect class="card" x="28" y="30" width="400" height="260" rx="10" stroke-width="1.5"/>
+  <text class="mute sans" x="48" y="58" font-size="12">gcp.disk.delete.mapi.yaml</text>
+  <g class="mono" font-size="13.5">
+    <text x="48" y="88"><tspan class="key">effect</tspan><tspan class="ink">: </tspan><tspan class="val">destroy</tspan></text>
+    <text x="48" y="114"><tspan class="key">consent</tspan><tspan class="ink">: </tspan><tspan class="val">dry-run by default</tspan></text>
+    <text x="48" y="140"><tspan class="key">precondition</tspan><tspan class="ink">: </tspan><tspan class="val">snapshot exists</tspan></text>
+    <text x="48" y="166"><tspan class="key">reversible</tspan><tspan class="ink">: </tspan><tspan class="val">create_from_snapshot</tspan></text>
+    <text x="48" y="192"><tspan class="key">proof</tspan><tspan class="ink">: </tspan><tspan class="val">re-read: disk is gone</tspan></text>
+    <text x="48" y="218"><tspan class="key">budget</tspan><tspan class="ink">: </tspan><tspan class="val">$0, 16 KB out</tspan></text>
+    <text x="48" y="250"><tspan class="acc" font-weight="700">access</tspan><tspan class="ink">: </tspan><tspan class="val">[@alice, group:ops]</tspan></text>
+  </g>
+  <text class="mute sans" x="48" y="276" font-size="11.5">16 refusal rules check it before anything runs</text>
+
+  <!-- arrows -->
+  <path class="line" d="M428 160 C 480 160, 480 76, 530 76" fill="none" stroke-width="1.6"/>
+  <path class="line" d="M428 160 L 530 160" fill="none" stroke-width="1.6"/>
+  <path class="line" d="M428 160 C 480 160, 480 244, 530 244" fill="none" stroke-width="1.6"/>
+
+  <!-- readers -->
+  <rect class="card" x="530" y="48" width="322" height="56" rx="8" stroke-width="1.2"/>
+  <text class="ink sans" x="550" y="72" font-size="14" font-weight="600">Programs</text>
+  <text class="mute sans" x="550" y="92" font-size="12.5">OpenAPI (emitter planned)</text>
+
+  <rect class="card" x="530" y="132" width="322" height="56" rx="8" stroke-width="1.2"/>
+  <text class="ink sans" x="550" y="156" font-size="14" font-weight="600">Agents</text>
+  <text class="mute sans" x="550" y="176" font-size="12.5">MCP tools/list, with confirm and annotations</text>
+
+  <rect class="card" x="530" y="216" width="322" height="56" rx="8" stroke-width="1.2"/>
+  <text class="ink sans" x="550" y="240" font-size="14" font-weight="600">Auditors</text>
+  <text class="mute sans" x="550" y="260" font-size="12.5">conformance suite (planned)</text>
+</svg>
