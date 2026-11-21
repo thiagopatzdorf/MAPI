@@ -81,6 +81,10 @@ budget:                         # obrigatório (pode ser zero)
   max_duration_s: 120                    # opcional
   rate: { per: "day", max: 100000 }      # opcional
 
+access:                         # obrigatório se effect != read (R16); opcional em read
+  callers: ["@alice", "group:socios", "age1…"]   # quem pode chamar; cada um vira chave pública (R17)
+  data: { at_rest: encrypted }  # opcional: o que a capacidade guarda fica cifrado para os callers
+
 bindings:                       # como a capacidade é alcançada; ≥ 1 (obrigatório)
   http:
     method: POST                # read ⇒ GET|HEAD|QUERY; write ⇒ POST|PUT|PATCH; destroy ⇒ DELETE|POST
@@ -112,6 +116,11 @@ x-anything: ...                 # extensões: qualquer chave `x-` é aceita e ig
   primeira vez. Se `true` e `bindings.http` existe, o compilador emite o
   parâmetro `Idempotency-Key` (draft IETF) **ou** exige que `input` tenha um
   campo marcado `x-mapi-idempotency-token: true` (Smithy `idempotencyToken`).
+  Em `write`/`destroy`, `idempotent: true` precisa de **uma** garantia declarada (R14): (a) o campo
+  token acima; (b) `bindings.http.method` PUT ou DELETE, idempotentes pela semântica HTTP (RFC 9110
+  §9.2.2); ou (c) `x-mapi-natural-key`, lista de campos do `input` que identificam o recurso, para o
+  caso em que repetir devolve "já existe / nada a fazer" (ex.: criar disco por nome). A (c) é extensão
+  `x-` na v0.1 e vira campo do núcleo na v0.2 se o uso confirmar.
 - **`consent.dry_run: default`**: toda chamada sem `confirm: true` **não executa**
   e devolve o envelope seco (§4) com `would_do`. Travas (`refuses`,
   `precondition`) rodam **antes** do seco, para o agente saber já no ensaio que
@@ -142,13 +151,35 @@ x-anything: ...                 # extensões: qualquer chave `x-` é aceita e ig
 - **`examples`**: cada um vira caso de conformidade (seco, confirmado com fake,
   prova, inversa).
 
+### 2.2 `access`: quem pode (a pergunta que faltava)
+
+O resto do contrato diz o que a capacidade faz, se tem volta, como provar e quanto custa. `access`
+diz **quem**. Sem ele, a resposta era "quem tem o token chama tudo": acesso 100% ou 0%, o mesmo
+defeito que o Git tem com arquivos.
+
+- **`callers`**: lista de identidades, e cada uma tem de virar **chave pública** (R17):
+  - `@usuario`: as chaves SSH que o GitHub publica em `github.com/<usuario>.keys`, **fixadas** pelo
+    binding no momento em que a pessoa entra (chave trocada no GitHub não muda quem chama sem
+    passar por revisão);
+  - `group:<nome>`: grupo do registro de identidades do binding (no git selo, `groups` do `.selo.json`);
+  - `age1…` ou uma linha `ssh-ed25519`/`ssh-rsa`: chave direta, para máquinas e agentes;
+  - `*`: qualquer um, **só em `read`**.
+- **`data.at_rest: encrypted`**: o que a capacidade guarda (arquivo, registro, segredo) fica cifrado
+  para as chaves dos `callers`, no formato age v1. Quem garante é a matemática, não um servidor:
+  vale mesmo onde o host não coopera (um repositório Git, um bucket, um backup).
+- **Quem aplica é o binding**, com a mesma lista:
+  - arquivo num repositório → [git selo](../../apps/git-selo/README.md) (cifra para os callers;
+    `git selo check` é a prova);
+  - MCP → `tools/list` filtrado por quem chama (próximo passo do emissor; ainda não implementado);
+  - HTTP → requisição assinada com a chave do caller (ainda não implementado).
+
 ## 3. Regras que o compilador recusa (lista fechada, cada uma com teste)
 
 | # | recusa | por quê (defeito que impede) |
 |---|---|---|
 | R1 | `effect` ausente ou fora de `read|write|destroy` | tool sem efeito vira `destructiveHint: true` por padrão no MCP — ruído que ensina o cliente a ignorar o hint |
 | R2 | `write`/`destroy` sem `reversible.inverse` **nem** `reversible.irreversible.reason` | "destruir e criar custam o mesmo e os dois têm volta"; sem inversa escrita, ninguém limpa |
-| R3 | `inverse.capability` inexistente no conjunto compilado, ou com `effect: read`, ou igual à própria sem `idempotent: true` | inversa que não escreve não desfaz nada |
+| R3 | `inverse.capability` inexistente no conjunto compilado, ou com `effect: read`, ou igual à própria sem `idempotent: true` **e** sem `inverse.captures_state_before: true` | inversa que não escreve não desfaz nada; a própria capacidade só serve de inversa se repetir converge (idempotente) ou se restaura um estado absoluto capturado antes |
 | R4 | `write`/`destroy` sem `proof` | "enviado não é entregue" |
 | R5 | `proof.read.capability` com `effect != read` | prova que escreve contamina o estado que mede |
 | R6 | `destroy` sem `precondition.evidence` | só se destrói o que se sabe reconstruir, e a prova vem antes |
@@ -159,8 +190,10 @@ x-anything: ...                 # extensões: qualquer chave `x-` é aceita e ig
 | R11 | `bindings.http.method` incompatível com `effect` (ex.: `read` com POST sem `x-mapi-method-override`) | o programa leria GET como seguro |
 | R12 | `examples` vazio | sem exemplo não há caso de conformidade; sem caso, "MAPI" é só um rótulo |
 | R13 | chave desconhecida no topo sem prefixo `x-` | erro de digitação vira campo ignorado em silêncio (qwen-code v1→v2, medido na casa) |
-| R14 | `idempotent: true` sem token nem binding que o garanta | idempotência declarada e não implementada |
+| R14 | `write`/`destroy` com `idempotent: true` sem nenhuma garantia declarada: campo `x-mapi-idempotency-token: true` no `input`, `bindings.http.method` PUT ou DELETE, ou `x-mapi-natural-key` | idempotência declarada e não implementada |
 | R15 | em **fluxo** (Arazzo): passo que chama `write`/`destroy` cujo `reversible` é `irreversible` sem `consent` explícito no fluxo; soma de `budget.cost` > `flow.budget`; passo `destroy` sem `precondition` satisfeita por passo anterior | composição determinística: o avaliador recusa o plano, não o modelo |
+| R16 | `write`/`destroy` sem `access.callers` (lista não vazia) | sem "quem", vale quem tem o token: acesso tudo-ou-nada |
+| R17 | caller que não vira chave (`admin`, `time`, ECDSA), `*` fora de `read`, ou `access.data.at_rest` fora de `plain` ou `encrypted` | política que parece existir e não protege ninguém |
 
 Recusa é `exit 2` com `{rule: "R2", capability, path, message}` — JSON, para o
 importador marcar o que precisa de decisão humana (§6).

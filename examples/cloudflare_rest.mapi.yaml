@@ -128,6 +128,9 @@ reversible:
       capability: cloudflare.apagar
       args: { tipo: "$.derived.tipo", nome: "$.output.result.id" }
 
+access:
+  callers: ["@thiagopatzdorf", "group:maos"]   # resolvido para chaves pelo binding (SPEC §2.2)
+
 proof:
   read: { capability: cloudflare.rest.get, args: { path: "$.input.path" } }
   expect:

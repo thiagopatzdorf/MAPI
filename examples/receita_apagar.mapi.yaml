@@ -71,6 +71,9 @@ reversible:
     capability: gcp.disk.create_from_snapshot
     args: { zone: "$.input.zone", disk: "$.input.disk", snapshot: "$.input.snapshot", confirm: true }
 
+access:
+  callers: ["@thiagopatzdorf", "group:maos"]   # resolvido para chaves pelo binding (SPEC §2.2)
+
 proof:
   read: { capability: gcp.disk.get, args: { zone: "$.input.zone", disk: "$.input.disk" } }
   expect:
@@ -95,7 +98,7 @@ bindings:
     fixed_args: { tipo: disco }
     arg_map: { nome: "{zone}/{disk}", prova: "{snapshot}" }
 
-audit:
+x-audit:
   record_before_execute: true      # a receita grava fase=prova_conferida antes do DELETE; o compilador mantém isso na casca
 
 examples:
@@ -180,11 +183,15 @@ title: Recriar disco a partir de snapshot
 when_to_use: "Cria o disco {disk} em {zone} a partir do snapshot. É a volta de gcp.disk.delete. Seco por padrão."
 effect: write
 idempotent: true        # disco já existente com o mesmo nome → 409 tratado como 'nada a fazer' se sourceSnapshot bate
+x-mapi-natural-key: [zone, disk]   # repetir com o mesmo (zone, disk) não cria outro: devolve 'nada a fazer' (R14, garantia c)
 input: { type: object, additionalProperties: false, required: [zone, disk, snapshot], properties: { zone: { type: string }, disk: { type: string }, snapshot: { type: string } } }
 output: { type: object, properties: { operation: { type: string } } }
 consent: { dry_run: default, confirm: { parameter: confirm } }
 reversible:
   inverse: { capability: gcp.disk.delete, args: { zone: "$.input.zone", disk: "$.input.disk", snapshot: "$.input.snapshot", confirm: true } }
+access:
+  callers: ["@thiagopatzdorf", "group:maos"]   # resolvido para chaves pelo binding (SPEC §2.2)
+
 proof:
   read: { capability: gcp.disk.get, args: { zone: "$.input.zone", disk: "$.input.disk" } }
   expect: [{ context: "$.response.body", condition: "$.status == 'READY' && $.sourceSnapshot endsWith '/snapshots/' + $.input.snapshot", type: simple }]
